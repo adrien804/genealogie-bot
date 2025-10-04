@@ -1,5 +1,6 @@
 # Créé par Couderc Peyré, le 03/10/2025 en Python 3.7
 import streamlit as st
+import io
 
 # ==============================
 # Initialisation des données persistantes
@@ -12,7 +13,7 @@ if "historique" not in st.session_state:
     st.session_state.historique = []
 
 # ==============================
-# Fonctions
+# Fonctions principales
 # ==============================
 def ajouter_personne(nom, prenom, naissance=""):
     st.session_state.personnes[nom] = {"prenom": prenom, "naissance": naissance}
@@ -48,6 +49,59 @@ def lister_familles():
     return texte
 
 # ==============================
+# Import / Export GEDCOM
+# ==============================
+def exporter_gedcom():
+    buffer = io.StringIO()
+    buffer.write("0 HEAD\n1 SOUR ChatGPT\n1 CHAR UTF-8\n")
+    for i, (nom, data) in enumerate(st.session_state.personnes.items(), start=1):
+        buffer.write(f"0 @I{i}@ INDI\n")
+        buffer.write(f"1 NAME {data['prenom']} /{nom}/\n")
+        if data['naissance']:
+            buffer.write(f"1 BIRT\n2 DATE {data['naissance']}\n")
+    for j, fam in enumerate(st.session_state.familles, start=1):
+        buffer.write(f"0 @F{j}@ FAM\n")
+        buffer.write(f"1 HUSB @{fam['parent1']}@\n")
+        buffer.write(f"1 WIFE @{fam['parent2']}@\n")
+        buffer.write(f"1 CHIL @{fam['enfant']}@\n")
+    buffer.write("0 TRLR\n")
+    return buffer.getvalue()
+
+def importer_gedcom(fichier):
+    contenu = fichier.read().decode("utf-8").splitlines()
+    personnes = {}
+    familles = []
+    current_person = None
+
+    for ligne in contenu:
+        parts = ligne.strip().split(" ", 2)
+        if len(parts) < 2:
+            continue
+        if parts[1] == "INDI":
+            current_person = parts[0]
+            personnes[current_person] = {"prenom": "", "nom": "", "naissance": ""}
+        elif parts[1] == "NAME" and current_person:
+            full_name = parts[2].replace("/", "").split()
+            if len(full_name) >= 2:
+                personnes[current_person]["prenom"] = full_name[0]
+                personnes[current_person]["nom"] = full_name[1]
+        elif parts[1] == "DATE" and current_person:
+            personnes[current_person]["naissance"] = parts[2]
+        elif parts[1] == "FAM":
+            familles.append({"parent1": "", "parent2": "", "enfant": ""})
+        elif parts[1] == "HUSB" and familles:
+            familles[-1]["parent1"] = parts[2].strip("@")
+        elif parts[1] == "WIFE" and familles:
+            familles[-1]["parent2"] = parts[2].strip("@")
+        elif parts[1] == "CHIL" and familles:
+            familles[-1]["enfant"] = parts[2].strip("@")
+
+    # Mise à jour des données
+    st.session_state.personnes = {v["nom"]: {"prenom": v["prenom"], "naissance": v["naissance"]} for v in personnes.values() if v["nom"]}
+    st.session_state.familles = familles
+    st.session_state.historique.append(f"📂 Importé {len(personnes)} personnes et {len(familles)} familles depuis GEDCOM.")
+
+# ==============================
 # Interface Streamlit
 # ==============================
 st.set_page_config(page_title="Arbre Généalogique", layout="wide")
@@ -60,7 +114,6 @@ with col1:
     commande = st.text_input("Entre une commande :")
     if st.button("Exécuter"):
         if commande.startswith("ajouter"):
-            # Ex: ajouter Dupont Jean 1990
             parts = commande.split()
             if len(parts) >= 3:
                 msg = ajouter_personne(parts[1], parts[2], parts[3] if len(parts) > 3 else "")
@@ -68,7 +121,6 @@ with col1:
             else:
                 st.session_state.historique.append("⚠️ Format : ajouter Nom Prénom [Naissance]")
         elif "+" in commande and "=" in commande:
-            # Ex: Dupont + Martin = Enfant
             try:
                 parents, enfant = commande.split("=")
                 parent1, parent2 = parents.split("+")
@@ -77,7 +129,6 @@ with col1:
             except Exception as e:
                 st.session_state.historique.append(f"⚠️ Format : Parent1 + Parent2 = Enfant ({e})")
         elif commande.startswith("modifier"):
-            # Ex: modifier Dupont prenom=Jean naissance=1980
             parts = commande.split()
             if len(parts) >= 2:
                 nom = parts[1]
@@ -99,6 +150,15 @@ with col1:
         else:
             st.session_state.historique.append(f"❓ Commande inconnue : {commande}")
 
+    st.subheader("📤 Export / 📥 Import")
+    if st.button("Exporter en GEDCOM"):
+        gedcom_data = exporter_gedcom()
+        st.download_button("Télécharger le fichier GEDCOM", gedcom_data, file_name="arbre_genealogique.ged")
+
+    fichier_import = st.file_uploader("Importer un fichier GEDCOM", type=["ged"])
+    if fichier_import:
+        importer_gedcom(fichier_import)
+
     st.subheader("📌 Commandes disponibles")
     st.text("""
 - ajouter Nom Prénom [Naissance]
@@ -116,6 +176,6 @@ with col1:
 
 # Partie droite : historique
 with col2:
-    st.subheader("📝 Historique des actions")
-    for h in st.session_state.historique[-50:]:  # garde les 50 dernières commandes max
+    st.subheader("📝 Historique (les plus récents en haut)")
+    for h in reversed(st.session_state.historique[-50:]):  # ✅ inversé ici
         st.write(h)
