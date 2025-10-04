@@ -1,181 +1,112 @@
 # Créé par Couderc Peyré, le 03/10/2025 en Python 3.7
 import streamlit as st
 import io
+import re
 
-# ==============================
-# Initialisation des données persistantes
-# ==============================
-if "personnes" not in st.session_state:
-    st.session_state.personnes = {}
-if "familles" not in st.session_state:
-    st.session_state.familles = []
-if "historique" not in st.session_state:
-    st.session_state.historique = []
+# -------------------------
+# Initialisation état
+# -------------------------
+if "persons" not in st.session_state:
+    st.session_state.persons = {}        # id -> {prenom, nom, sex, birth, place, note}
+if "next_person_id" not in st.session_state:
+    st.session_state.next_person_id = 1
+if "families" not in st.session_state:
+    st.session_state.families = {}      # fid -> {parent1:int or 0, parent2:int or 0, children:[int,...]}
+if "next_family_id" not in st.session_state:
+    st.session_state.next_family_id = 1
+if "history" not in st.session_state:
+    st.session_state.history = []       # most recent first
 
-# ==============================
-# Fonctions principales
-# ==============================
-def ajouter_personne(nom, prenom, naissance=""):
-    st.session_state.personnes[nom] = {"prenom": prenom, "naissance": naissance}
-    return f"✅ Ajouté : {prenom} {nom}"
+# -------------------------
+# Helpers
+# -------------------------
+def add_history(msg):
+    # insert at front so newest appear first
+    st.session_state.history.insert(0, msg)
+    # limit history size (optional)
+    if len(st.session_state.history) > 500:
+        st.session_state.history = st.session_state.history[:500]
 
-def ajouter_famille(parent1, parent2, enfant):
-    st.session_state.familles.append({"parent1": parent1, "parent2": parent2, "enfant": enfant})
-    return f"👨‍👩‍👧 Famille ajoutée : {parent1} + {parent2} = {enfant}"
+def add_person(prenom, nom, sex="", birth="", place="", note=""):
+    pid = st.session_state.next_person_id
+    st.session_state.persons[pid] = {
+        "prenom": str(prenom),
+        "nom": str(nom),
+        "sex": str(sex),
+        "birth": str(birth),
+        "place": str(place),
+        "note": str(note)
+    }
+    st.session_state.next_person_id += 1
+    add_history(f"✅ Personne ajoutée: ID {pid} — {prenom} {nom} (sex={sex})")
+    return pid
 
-def modifier_personne(nom, prenom=None, naissance=None):
-    if nom not in st.session_state.personnes:
-        return f"❌ Erreur : {nom} introuvable."
-    if prenom:
-        st.session_state.personnes[nom]["prenom"] = prenom
-    if naissance:
-        st.session_state.personnes[nom]["naissance"] = naissance
-    return f"✏️ {nom} modifié."
+def find_person_by_token(tok):
+    """Try to resolve token to an integer id.
+       tok can be digits (id) or a name string (prenom or nom or 'prenom nom')."""
+    tok = tok.strip()
+    if tok.isdigit():
+        pid = int(tok)
+        if pid in st.session_state.persons:
+            return pid
+        return None
+    # search by "prenom nom" or by nom or prenom (case-insensitive)
+    low = tok.lower()
+    for pid, p in st.session_state.persons.items():
+        full = f"{p['prenom']} {p['nom']}".strip().lower()
+        if low == full or low == p['prenom'].lower() or low == p['nom'].lower():
+            return pid
+    return None
 
-def lister_personnes():
-    if not st.session_state.personnes:
-        return "Aucune personne enregistrée."
-    texte = "👥 Liste des personnes :\n"
-    for nom, d in st.session_state.personnes.items():
-        texte += f"- {d['prenom']} {nom} (né {d['naissance']})\n"
-    return texte
-
-def lister_familles():
-    if not st.session_state.familles:
-        return "Aucune famille enregistrée."
-    texte = "🏠 Liste des familles :\n"
-    for f in st.session_state.familles:
-        texte += f"- {f['parent1']} + {f['parent2']} = {f['enfant']}\n"
-    return texte
-
-# ==============================
-# Import / Export GEDCOM
-# ==============================
-def exporter_gedcom():
-    buffer = io.StringIO()
-    buffer.write("0 HEAD\n1 SOUR ChatGPT\n1 CHAR UTF-8\n")
-    for i, (nom, data) in enumerate(st.session_state.personnes.items(), start=1):
-        buffer.write(f"0 @I{i}@ INDI\n")
-        buffer.write(f"1 NAME {data['prenom']} /{nom}/\n")
-        if data['naissance']:
-            buffer.write(f"1 BIRT\n2 DATE {data['naissance']}\n")
-    for j, fam in enumerate(st.session_state.familles, start=1):
-        buffer.write(f"0 @F{j}@ FAM\n")
-        buffer.write(f"1 HUSB @{fam['parent1']}@\n")
-        buffer.write(f"1 WIFE @{fam['parent2']}@\n")
-        buffer.write(f"1 CHIL @{fam['enfant']}@\n")
-    buffer.write("0 TRLR\n")
-    return buffer.getvalue()
-
-def importer_gedcom(fichier):
-    contenu = fichier.read().decode("utf-8").splitlines()
-    personnes = {}
-    familles = []
-    current_person = None
-
-    for ligne in contenu:
-        parts = ligne.strip().split(" ", 2)
-        if len(parts) < 2:
-            continue
-        if parts[1] == "INDI":
-            current_person = parts[0]
-            personnes[current_person] = {"prenom": "", "nom": "", "naissance": ""}
-        elif parts[1] == "NAME" and current_person:
-            full_name = parts[2].replace("/", "").split()
-            if len(full_name) >= 2:
-                personnes[current_person]["prenom"] = full_name[0]
-                personnes[current_person]["nom"] = full_name[1]
-        elif parts[1] == "DATE" and current_person:
-            personnes[current_person]["naissance"] = parts[2]
-        elif parts[1] == "FAM":
-            familles.append({"parent1": "", "parent2": "", "enfant": ""})
-        elif parts[1] == "HUSB" and familles:
-            familles[-1]["parent1"] = parts[2].strip("@")
-        elif parts[1] == "WIFE" and familles:
-            familles[-1]["parent2"] = parts[2].strip("@")
-        elif parts[1] == "CHIL" and familles:
-            familles[-1]["enfant"] = parts[2].strip("@")
-
-    # Mise à jour des données
-    st.session_state.personnes = {v["nom"]: {"prenom": v["prenom"], "naissance": v["naissance"]} for v in personnes.values() if v["nom"]}
-    st.session_state.familles = familles
-    st.session_state.historique.append(f"📂 Importé {len(personnes)} personnes et {len(familles)} familles depuis GEDCOM.")
-
-# ==============================
-# Interface Streamlit
-# ==============================
-st.set_page_config(page_title="Arbre Généalogique", layout="wide")
-
-col1, col2 = st.columns([1, 2])
-
-# Partie gauche : saisie + commandes
-with col1:
-    st.subheader("➡️ Commande")
-    commande = st.text_input("Entre une commande :")
-    if st.button("Exécuter"):
-        if commande.startswith("ajouter"):
-            parts = commande.split()
-            if len(parts) >= 3:
-                msg = ajouter_personne(parts[1], parts[2], parts[3] if len(parts) > 3 else "")
-                st.session_state.historique.append(msg)
+def create_or_append_family(p1, p2, child):
+    """Create a family (parents p1,p2) or append child to existing family with same parents."""
+    # try find existing family with same parents (order-insensitive)
+    for fid, fam in st.session_state.families.items():
+        parents = {fam.get("parent1"), fam.get("parent2")}
+        if {p1, p2} == parents:
+            if child not in fam["children"]:
+                fam["children"].append(child)
+                add_history(f"➕ Enfant {child} ajouté à la famille {fid}")
             else:
-                st.session_state.historique.append("⚠️ Format : ajouter Nom Prénom [Naissance]")
-        elif "+" in commande and "=" in commande:
-            try:
-                parents, enfant = commande.split("=")
-                parent1, parent2 = parents.split("+")
-                msg = ajouter_famille(parent1.strip(), parent2.strip(), enfant.strip())
-                st.session_state.historique.append(msg)
-            except Exception as e:
-                st.session_state.historique.append(f"⚠️ Format : Parent1 + Parent2 = Enfant ({e})")
-        elif commande.startswith("modifier"):
-            parts = commande.split()
-            if len(parts) >= 2:
-                nom = parts[1]
-                prenom = None
-                naissance = None
-                for part in parts[2:]:
-                    if part.startswith("prenom="):
-                        prenom = part.split("=")[1]
-                    if part.startswith("naissance="):
-                        naissance = part.split("=")[1]
-                msg = modifier_personne(nom, prenom, naissance)
-                st.session_state.historique.append(msg)
-            else:
-                st.session_state.historique.append("⚠️ Format : modifier Nom prenom=... naissance=...")
-        elif commande == "liste personnes":
-            st.session_state.historique.append(lister_personnes())
-        elif commande == "liste familles":
-            st.session_state.historique.append(lister_familles())
-        else:
-            st.session_state.historique.append(f"❓ Commande inconnue : {commande}")
+                add_history(f"ℹ️ Enfant {child} déjà présent dans la famille {fid}")
+            return fid
+    # else create new family
+    fid = st.session_state.next_family_id
+    st.session_state.families[fid] = {"parent1": p1, "parent2": p2, "children": [child]}
+    st.session_state.next_family_id += 1
+    add_history(f"✅ Famille créée: ID {fid} — parents ({p1}, {p2}) -> enfant {child}")
+    return fid
 
-    st.subheader("📤 Export / 📥 Import")
-    if st.button("Exporter en GEDCOM"):
-        gedcom_data = exporter_gedcom()
-        st.download_button("Télécharger le fichier GEDCOM", gedcom_data, file_name="arbre_genealogique.ged")
-
-    fichier_import = st.file_uploader("Importer un fichier GEDCOM", type=["ged"])
-    if fichier_import:
-        importer_gedcom(fichier_import)
-
-    st.subheader("📌 Commandes disponibles")
-    st.text("""
-- ajouter Nom Prénom [Naissance]
-   ex: ajouter Dupont Jean 1990
-
-- Parent1 + Parent2 = Enfant
-   ex: Dupont + Martin = Paul
-
-- modifier Nom prenom=... naissance=...
-   ex: modifier Dupont prenom=Jean naissance=1985
-
-- liste personnes
-- liste familles
-    """)
-
-# Partie droite : historique
-with col2:
-    st.subheader("📝 Historique (les plus récents en haut)")
-    for h in reversed(st.session_state.historique[-50:]):  # ✅ inversé ici
-        st.write(h)
+# -------------------------
+# Export GEDCOM
+# -------------------------
+def build_gedcom_string():
+    buf = io.StringIO()
+    buf.write("0 HEAD\n1 SOUR StreamlitBot\n1 CHAR UTF-8\n")
+    # individuals: use their numeric ID as identifier
+    for pid in sorted(st.session_state.persons.keys()):
+        p = st.session_state.persons[pid]
+        buf.write(f"0 @I{pid}@ INDI\n")
+        name_line = f"{p['prenom'] or ''}"
+        if p['nom']:
+            name_line += f" /{p['nom']}/"
+        buf.write(f"1 NAME {name_line}\n")
+        if p.get("sex"):
+            buf.write(f"1 SEX {p['sex']}\n")
+        if p.get("birth"):
+            buf.write("1 BIRT\n")
+            buf.write(f"2 DATE {p['birth']}\n")
+        if p.get("place"):
+            buf.write(f"1 PLAC {p['place']}\n")
+        if p.get("note"):
+            buf.write(f"1 NOTE {p['note']}\n")
+    # families
+    for fid in sorted(st.session_state.families.keys()):
+        fam = st.session_state.families[fid]
+        buf.write(f"0 @F{fid}@ FAM\n")
+        # put parent1 as HUSB and parent2 as WIFE if we have sexes, else still write both
+        if fam.get("parent1"):
+            buf.write(f"1 HUSB @I{fam['parent1']}@\n")
+        if fam.get("parent2"):
+            buf.write(f"1 WIFE @I{fam['parent2']}@\n")
+        for c in fam.get("children", []):
