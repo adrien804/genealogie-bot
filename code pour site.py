@@ -2,67 +2,80 @@
 import streamlit as st
 
 # ==============================
-# Données en mémoire
+# Initialisation des données persistantes
 # ==============================
-personnes = {}
-familles = []
-historique = []
+if "personnes" not in st.session_state:
+    st.session_state.personnes = {}
+if "familles" not in st.session_state:
+    st.session_state.familles = []
+if "historique" not in st.session_state:
+    st.session_state.historique = []
 
 # ==============================
 # Fonctions
 # ==============================
 def ajouter_personne(nom, prenom, naissance=""):
-    personnes[nom] = {"prenom": prenom, "naissance": naissance}
-    return f"Ajouté : {prenom} {nom}"
+    st.session_state.personnes[nom] = {"prenom": prenom, "naissance": naissance}
+    return f"✅ Ajouté : {prenom} {nom}"
 
 def ajouter_famille(parent1, parent2, enfant):
-    familles.append({"parent1": parent1, "parent2": parent2, "enfant": enfant})
-    return f"Famille ajoutée : {parent1} + {parent2} = {enfant}"
+    st.session_state.familles.append({"parent1": parent1, "parent2": parent2, "enfant": enfant})
+    return f"👨‍👩‍👧 Famille ajoutée : {parent1} + {parent2} = {enfant}"
 
 def modifier_personne(nom, prenom=None, naissance=None):
-    if nom not in personnes:
-        return f"Erreur : {nom} introuvable."
+    if nom not in st.session_state.personnes:
+        return f"❌ Erreur : {nom} introuvable."
     if prenom:
-        personnes[nom]["prenom"] = prenom
+        st.session_state.personnes[nom]["prenom"] = prenom
     if naissance:
-        personnes[nom]["naissance"] = naissance
-    return f"{nom} modifié."
+        st.session_state.personnes[nom]["naissance"] = naissance
+    return f"✏️ {nom} modifié."
 
 def lister_personnes():
-    return "\n".join([f"{p} : {d['prenom']} (né {d['naissance']})" for p, d in personnes.items()]) or "Aucune personne."
+    if not st.session_state.personnes:
+        return "Aucune personne enregistrée."
+    texte = "👥 Liste des personnes :\n"
+    for nom, d in st.session_state.personnes.items():
+        texte += f"- {d['prenom']} {nom} (né {d['naissance']})\n"
+    return texte
 
 def lister_familles():
-    return "\n".join([f"{f['parent1']} + {f['parent2']} = {f['enfant']}" for f in familles]) or "Aucune famille."
+    if not st.session_state.familles:
+        return "Aucune famille enregistrée."
+    texte = "🏠 Liste des familles :\n"
+    for f in st.session_state.familles:
+        texte += f"- {f['parent1']} + {f['parent2']} = {f['enfant']}\n"
+    return texte
 
 # ==============================
 # Interface Streamlit
 # ==============================
 st.set_page_config(page_title="Arbre Généalogique", layout="wide")
 
-col1, col2 = st.columns([1,2])
+col1, col2 = st.columns([1, 2])
 
-# Partie gauche
+# Partie gauche : saisie + commandes
 with col1:
     st.subheader("➡️ Commande")
-    commande = st.text_input("Écris une commande :")
+    commande = st.text_input("Entre une commande :")
     if st.button("Exécuter"):
         if commande.startswith("ajouter"):
             # Ex: ajouter Dupont Jean 1990
             parts = commande.split()
             if len(parts) >= 3:
                 msg = ajouter_personne(parts[1], parts[2], parts[3] if len(parts) > 3 else "")
-                historique.append(msg)
+                st.session_state.historique.append(msg)
             else:
-                historique.append("Format : ajouter Nom Prénom [Naissance]")
+                st.session_state.historique.append("⚠️ Format : ajouter Nom Prénom [Naissance]")
         elif "+" in commande and "=" in commande:
             # Ex: Dupont + Martin = Enfant
             try:
                 parents, enfant = commande.split("=")
                 parent1, parent2 = parents.split("+")
                 msg = ajouter_famille(parent1.strip(), parent2.strip(), enfant.strip())
-                historique.append(msg)
-            except:
-                historique.append("Format : Parent1 + Parent2 = Enfant")
+                st.session_state.historique.append(msg)
+            except Exception as e:
+                st.session_state.historique.append(f"⚠️ Format : Parent1 + Parent2 = Enfant ({e})")
         elif commande.startswith("modifier"):
             # Ex: modifier Dupont prenom=Jean naissance=1980
             parts = commande.split()
@@ -76,15 +89,15 @@ with col1:
                     if part.startswith("naissance="):
                         naissance = part.split("=")[1]
                 msg = modifier_personne(nom, prenom, naissance)
-                historique.append(msg)
+                st.session_state.historique.append(msg)
             else:
-                historique.append("Format : modifier Nom prenom=... naissance=...")
+                st.session_state.historique.append("⚠️ Format : modifier Nom prenom=... naissance=...")
         elif commande == "liste personnes":
-            historique.append(lister_personnes())
+            st.session_state.historique.append(lister_personnes())
         elif commande == "liste familles":
-            historique.append(lister_familles())
+            st.session_state.historique.append(lister_familles())
         else:
-            historique.append(f"Commande inconnue : {commande}")
+            st.session_state.historique.append(f"❓ Commande inconnue : {commande}")
 
     st.subheader("📌 Commandes disponibles")
     st.text("""
@@ -101,9 +114,8 @@ with col1:
 - liste familles
     """)
 
-# Partie droite
+# Partie droite : historique
 with col2:
-    st.subheader("📝 Historique")
-    for h in historique:
+    st.subheader("📝 Historique des actions")
+    for h in st.session_state.historique[-50:]:  # garde les 50 dernières commandes max
         st.write(h)
-
