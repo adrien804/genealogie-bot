@@ -19,61 +19,53 @@ if "next_family_id" not in st.session_state:
 if "relations" not in st.session_state:
     st.session_state.relations = []     # [{'type':..., 'persons':[id,...], 'note':...}]
 if "history" not in st.session_state:
-    st.session_state.history = []       # newest first
+    st.session_state.history = []       # newest first, capped to 50
 if "cmd_input" not in st.session_state:
     st.session_state.cmd_input = ""
-if "_last_gedcom" not in st.session_state:
-    st.session_state._last_gedcom = None
+# UI state
+if "_action_request" not in st.session_state:
+    st.session_state._action_request = None
+if "_editing" not in st.session_state:
+    st.session_state._editing = None
+if "_to_delete" not in st.session_state:
+    st.session_state._to_delete = None
+if "_show_detail" not in st.session_state:
+    st.session_state._show_detail = None
 
 # -------------------------
 # Helpers
 # -------------------------
+HISTORY_LIMIT = 50
+
 def add_history(msg):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     st.session_state.history.insert(0, f"[{timestamp}] {msg}")
-    if len(st.session_state.history) > 1000:
-        st.session_state.history = st.session_state.history[:1000]
+    # keep most recent HISTORY_LIMIT entries
+    if len(st.session_state.history) > HISTORY_LIMIT:
+        st.session_state.history = st.session_state.history[:HISTORY_LIMIT]
 
-def create_person(prenom, nom, sex="", birth="", death="", place="", note=""):
+def create_person_internal(pren, nom, sex="", birth="", death="", place="", note=""):
+    """Create person without adding a history line (useful for imports)."""
     pid = st.session_state.next_person_id
     st.session_state.persons[pid] = {
-        "prenom": prenom.strip(),
-        "nom": nom.strip(),
-        "sex": sex.strip(),
-        "birth": birth.strip(),
-        "death": death.strip(),
-        "place": place.strip(),
-        "note": note.strip()
+        "prenom": str(pren).strip(),
+        "nom": str(nom).strip(),
+        "sex": str(sex).strip(),
+        "birth": str(birth).strip(),
+        "death": str(death).strip(),
+        "place": str(place).strip(),
+        "note": str(note).strip()
     }
     st.session_state.next_person_id += 1
-    add_history(f"✅ Personne ajoutée — ID {pid}: {prenom} {nom} (sex={sex})")
     return pid
 
-def delete_person(pid):
-    if pid not in st.session_state.persons:
-        add_history(f"❌ Suppression échouée : personne {pid} introuvable")
-        return
-    # remove from persons
-    person = st.session_state.persons.pop(pid)
-    # remove from families (children and parents)
-    to_delete_fids = []
-    for fid, fam in list(st.session_state.families.items()):
-        if pid in fam.get("parents", []) or pid in fam.get("children", []):
-            # remove pid from children list
-            fam["children"] = [c for c in fam["children"] if c != pid]
-            fam["parents"] = [p for p in fam["parents"] if p != pid]
-            # if family has no parents and no children, mark for removal
-            if (not fam["parents"] or sum(1 for p in fam["parents"] if p)) and not fam["children"]:
-                # keep families with at least one parent if children absent? simpler: remove empty families (no parents and no children)
-                if not fam["parents"] and not fam["children"]:
-                    to_delete_fids.append(fid)
-    for fid in to_delete_fids:
-        st.session_state.families.pop(fid, None)
-    # remove relations that involve pid
-    st.session_state.relations = [r for r in st.session_state.relations if pid not in r.get("persons",[])]
-    add_history(f"🗑️ Personne supprimée — ID {pid}: {person.get('prenom','')} {person.get('nom','')} (relations nettoyées)")
+def create_person(pren, nom, sex="", birth="", death="", place="", note=""):
+    pid = create_person_internal(pren, nom, sex, birth, death, place, note)
+    add_history(f"Personne ajoutée — ID {pid}: {pren} {nom} (sex={sex})")
+    return pid
 
 def find_person_by_token(tok):
+    """Resolve token to ID: numeric ID or exact prenom/nom match (case-insensitive)."""
     if tok is None:
         return None
     s = str(tok).strip()
@@ -83,39 +75,77 @@ def find_person_by_token(tok):
         pid = int(s)
         return pid if pid in st.session_state.persons else None
     low = s.lower()
+    # try exact "prenom nom", then prenom, then nom
     for pid, p in st.session_state.persons.items():
         full = f"{p.get('prenom','')} {p.get('nom','')}".strip().lower()
         if low == full or low == p.get('prenom','').lower() or low == p.get('nom','').lower():
             return pid
     return None
 
-def create_family(parents:list, child:int):
-    # parents is list of two IDs (may contain 0 or None)
-    p1, p2 = (parents[0] if parents and len(parents)>0 else 0), (parents[1] if parents and len(parents)>1 else 0)
-    # try to find existing family with same parents set
+def create_family(parents, child):
+    """parents: list [p1,p2]; child: id"""
+    p1 = parents[0] if len(parents) > 0 else 0
+    p2 = parents[1] if len(parents) > 1 else 0
+    # find existing fam with same parents set
     parents_set = {p1, p2}
     for fid, fam in st.session_state.families.items():
-        if set(fam.get("parents",[]))==parents_set:
+        if set(fam.get("parents", [])) == parents_set:
             if child not in fam["children"]:
                 fam["children"].append(child)
-                add_history(f"➕ Enfant {child} ajouté à la famille {fid}")
+                add_history(f"Enfant {child} ajouté à la famille {fid}")
             else:
-                add_history(f"ℹ️ Enfant {child} déjà dans la famille {fid}")
+                add_history(f"Enfant {child} déjà présent dans la famille {fid}")
             return fid
-    # create new family
     fid = st.session_state.next_family_id
     st.session_state.families[fid] = {"parents":[p1,p2], "children":[child]}
     st.session_state.next_family_id += 1
-    add_history(f"✅ Famille créée — ID {fid}: parents ({p1},{p2}) -> enfant {child}")
+    add_history(f"Famille créée — ID {fid}: parents ({p1},{p2}) -> enfant {child}")
     return fid
 
-def add_relation(rel_type, id1, id2, note=""):
+def add_relation(type_name, id1, id2, note=""):
     if id1 not in st.session_state.persons or id2 not in st.session_state.persons:
-        add_history(f"❌ Relation {rel_type} échouée : ID introuvable ({id1},{id2})")
-        return None
-    st.session_state.relations.append({"type":rel_type, "persons":[id1,id2], "note":note})
-    add_history(f"🔗 Relation '{rel_type}' créée entre {id1} et {id2} {(':'+note) if note else ''}")
+        add_history(f"Relation {type_name} échouée : ID introuvable ({id1},{id2})")
+        return False
+    # For divorce: if marriage exists between same persons, remove it
+    if type_name == "divorce":
+        removed = False
+        new_rel = []
+        for r in st.session_state.relations:
+            if r["type"] == "mariage" and set(r["persons"]) == set([id1,id2]):
+                removed = True
+                continue
+            new_rel.append(r)
+        st.session_state.relations = new_rel
+        st.session_state.relations.append({"type":"divorce","persons":[id1,id2],"note":note})
+        if removed:
+            add_history(f"Divorce enregistré entre {id1} et {id2} (mariage précédent supprimé).")
+        else:
+            add_history(f"Divorce enregistré entre {id1} et {id2}.")
+        return True
+    # Otherwise just append relation
+    st.session_state.relations.append({"type":type_name, "persons":[id1,id2], "note":note})
+    add_history(f"Relation '{type_name}' créée entre {id1} et {id2}")
     return True
+
+def delete_person(pid):
+    if pid not in st.session_state.persons:
+        add_history(f"Suppression échouée : personne {pid} introuvable")
+        return
+    person = st.session_state.persons.pop(pid)
+    # remove from families
+    to_remove = []
+    for fid, fam in list(st.session_state.families.items()):
+        # remove from parents and children
+        fam["parents"] = [p for p in fam.get("parents", []) if p != pid]
+        fam["children"] = [c for c in fam.get("children", []) if c != pid]
+        # if completely empty, mark for removal
+        if (not fam.get("parents") or all(p==0 for p in fam.get("parents"))) and not fam.get("children"):
+            to_remove.append(fid)
+    for fid in to_remove:
+        st.session_state.families.pop(fid, None)
+    # remove relations involving pid
+    st.session_state.relations = [r for r in st.session_state.relations if pid not in r.get("persons", [])]
+    add_history(f"Personne supprimée — ID {pid}: {person.get('prenom','')} {person.get('nom','')} (relations et familles nettoyées)")
 
 # -------------------------
 # GEDCOM export / import
@@ -126,12 +156,10 @@ XREF_RE = re.compile(r'^@[^@]+@$')
 def build_gedcom_string():
     buf = io.StringIO()
     buf.write("0 HEAD\n1 SOUR StreamlitGenea\n1 CHAR UTF-8\n")
-    # individuals
     for pid in sorted(st.session_state.persons.keys()):
         p = st.session_state.persons[pid]
-        name_line = f"{p.get('prenom','')} /{p.get('nom','')}/"
         buf.write(f"0 @I{pid}@ INDI\n")
-        buf.write(f"1 NAME {name_line}\n")
+        buf.write(f"1 NAME {p.get('prenom','')} /{p.get('nom','')}/\n")
         if p.get("sex"):
             buf.write(f"1 SEX {p.get('sex')}\n")
         if p.get("birth"):
@@ -142,7 +170,6 @@ def build_gedcom_string():
             buf.write("1 PLAC " + p.get("place") + "\n")
         if p.get("note"):
             buf.write("1 NOTE " + p.get("note") + "\n")
-    # families
     for fid in sorted(st.session_state.families.keys()):
         fam = st.session_state.families[fid]
         buf.write(f"0 @F{fid}@ FAM\n")
@@ -153,12 +180,11 @@ def build_gedcom_string():
             buf.write(f"1 WIFE @I{parents[1]}@\n")
         for c in fam.get("children",[]):
             buf.write(f"1 CHIL @I{c}@\n")
-    # relations: write as note entries (non-standard)
     idx = 1
     for rel in st.session_state.relations:
         buf.write(f"0 @R{idx}@ RELA\n")
         buf.write(f"1 TYPE {rel['type']}\n")
-        for p in rel.get("persons",[]):
+        for p in rel.get("persons", []):
             buf.write(f"1 REF @I{p}@\n")
         if rel.get("note"):
             buf.write("1 NOTE " + rel.get("note") + "\n")
@@ -170,7 +196,7 @@ def import_gedcom_bytes(contents_bytes):
     try:
         text = contents_bytes.decode("utf-8", errors="replace").splitlines()
     except Exception as e:
-        add_history(f"❌ Erreur décodage GEDCOM: {e}")
+        add_history(f"Erreur décodage GEDCOM: {e}")
         return
     imported_persons = {}
     imported_fams = {}
@@ -239,25 +265,31 @@ def import_gedcom_bytes(contents_bytes):
                 if XREF_RE.match(x):
                     imported_fams[oldf]["children"].append(x)
             continue
-    # remap old->new
+    # remap
     old_to_new = {}
+    # create persons (use internal function to avoid spamming history for each)
     for old, pdata in imported_persons.items():
         pren = pdata.get("prenom","") or "Unknown"
         nom = pdata.get("nom","") or f"import_{st.session_state.next_person_id}"
-        new_id = create_person(pren, nom, pdata.get("sex",""), pdata.get("birth",""), pdata.get("death",""), pdata.get("place",""), pdata.get("note",""))
+        new_id = create_person_internal(pren, nom, pdata.get("sex",""), pdata.get("birth",""), pdata.get("death",""), pdata.get("place",""), pdata.get("note",""))
         old_to_new[old] = new_id
-    # families
+    # add a summary history line
+    add_history(f"Import: {len(imported_persons)} personnes ajoutées (IDs GEDCOM remappés).")
+    # create families
     for oldf, fdata in imported_fams.items():
-        husb = old_to_new.get(fdata.get("husb")) if fdata.get("husb") in old_to_new else 0
-        wife = old_to_new.get(fdata.get("wife")) if fdata.get("wife") in old_to_new else 0
-        children = [old_to_new[c] for c in fdata.get("children",[]) if c in old_to_new]
+        husb_old = fdata.get("husb")
+        wife_old = fdata.get("wife")
+        children_old = fdata.get("children", [])
+        p1 = old_to_new.get(husb_old) if husb_old in old_to_new else 0
+        p2 = old_to_new.get(wife_old) if wife_old in old_to_new else 0
+        children_new = [old_to_new[c] for c in children_old if c in old_to_new]
         fid = st.session_state.next_family_id
-        st.session_state.families[fid] = {"parents":[husb,wife], "children":children}
+        st.session_state.families[fid] = {"parents":[p1,p2], "children":children_new}
         st.session_state.next_family_id += 1
-    add_history(f"📥 Import terminé : {len(imported_persons)} personnes, {len(imported_fams)} familles (IDs remappés).")
+    add_history(f"Import: {len(imported_fams)} familles ajoutées.")
 
 # -------------------------
-# Command parser (IDs required for relations)
+# Command parser
 # -------------------------
 def handle_command(raw_cmd):
     if raw_cmd is None:
@@ -268,25 +300,27 @@ def handle_command(raw_cmd):
     add_history(f"> {cmd}")
     lc = cmd.lower().strip()
 
-    # ajouter personne Prenom Nom [Sex] [birth]
+    # ajouter personne Prenom Nom [Sex] [Birth]
     if lc.startswith("ajouter personne"):
         parts = cmd.split()
         if len(parts) >= 4:
-            pren = parts[2]; nom = parts[3]; sex = parts[4] if len(parts)>4 else ""
+            pren, nom = parts[2], parts[3]
+            sex = parts[4] if len(parts)>4 else ""
             birth = parts[5] if len(parts)>5 else ""
             create_person(pren, nom, sex, birth)
         else:
-            add_history("⚠️ Usage: ajouter personne <Prenom> <Nom> [Sex] [Birth]")
+            add_history("Usage: ajouter personne <Prenom> <Nom> [Sex] [Birth]")
         return
 
     # ajouter Prenom Nom (legacy)
     if lc.startswith("ajouter "):
         parts = cmd.split()
         if len(parts) >= 3:
-            pren = parts[1]; nom = parts[2]; birth = parts[3] if len(parts)>3 else ""
+            pren, nom = parts[1], parts[2]
+            birth = parts[3] if len(parts)>3 else ""
             create_person(pren, nom, "", birth)
         else:
-            add_history("⚠️ Usage: ajouter <Prenom> <Nom> [Birth]")
+            add_history("Usage: ajouter <Prenom> <Nom> [Birth]")
         return
 
     # modifier ID champ=val ...
@@ -296,10 +330,10 @@ def handle_command(raw_cmd):
             try:
                 pid = int(parts[1])
             except ValueError:
-                add_history("⚠️ Usage: modifier <id> champ=val ... (id doit être un nombre)")
+                add_history("Usage: modifier <id> champ=val ... (id doit être un nombre)")
                 return
             if pid not in st.session_state.persons:
-                add_history(f"❌ Personne id {pid} introuvable")
+                add_history(f"Personne id {pid} introuvable")
                 return
             updates = {}
             for part in parts[2:]:
@@ -313,82 +347,79 @@ def handle_command(raw_cmd):
             if "birth" in updates or "naissance" in updates: p["birth"]=updates.get("birth", updates.get("naissance",""))
             if "death" in updates: p["death"]=updates["death"]
             if "place" in updates: p["place"]=updates["place"]
-            add_history(f"✏️ Personne {pid} mise à jour")
+            if "note" in updates: p["note"]=updates["note"]
+            add_history(f"Personne {pid} mise à jour")
         else:
-            add_history("⚠️ Usage: modifier <id> champ=val ...")
+            add_history("Usage: modifier <id> champ=val ...")
         return
 
-    # parent relation: '1 + 2 = 3' or 'parent 1 + 2 = 3'
+    # parent relation: "1 + 2 = 3"
     if "+" in cmd and "=" in cmd:
         try:
             left, right = cmd.split("=",1)
             child_tok = right.strip()
             left_clean = left.lower().replace("parent","").strip()
             parts = [x.strip() for x in left_clean.split("+")]
-            if len(parts)!=2:
-                add_history("⚠️ Format: parent <id1> + <id2> = <idChild> (IDs requis).")
+            if len(parts) != 2:
+                add_history("Format: <id1> + <id2> = <idChild> (IDs requis).")
                 return
-            t1, t2 = parts[0], parts[1]
-            pid1 = find_person_by_token(t1)
-            pid2 = find_person_by_token(t2)
+            pid1 = find_person_by_token(parts[0])
+            pid2 = find_person_by_token(parts[1])
             child_id = find_person_by_token(child_tok)
             if pid1 is None or pid2 is None or child_id is None:
-                add_history("❌ Impossible de résoudre IDs (utilise la recherche pour obtenir les IDs).")
+                add_history("Impossible de résoudre un ou plusieurs IDs (utilise la recherche).")
                 return
             create_family([pid1,pid2], child_id)
         except Exception as e:
-            add_history(f"⚠️ Erreur parsing parent/enfant: {e}")
+            add_history(f"Erreur parsing parent/enfant: {e}")
         return
 
-    # mariage: accept 'mariage: ' form where we will show ID pickers in UI (handled separately)
+    # mariage: either "mariage 1 2" or "mariage:" -> show pickers
     if lc.startswith("mariage"):
-        # If user typed 'mariage 2 5' create directly
         parts = re.findall(r'\d+', cmd)
-        if len(parts)==2:
-            id1, id2 = int(parts[0]), int(parts[1])
-            add_relation("mariage", id1, id2)
+        if len(parts) == 2:
+            add_relation("mariage", int(parts[0]), int(parts[1]))
             return
-        # otherwise signal UI to show pickers
-        st.session_state._action_request = ("mariage_pick", None)
-        add_history("ℹ️ Choisis les deux IDs pour le mariage dans les menus ci-dessous puis clique 'Valider mariage'.")
+        st.session_state._action_request = ("mariage", None)
+        add_history("Choisis les deux IDs pour le mariage dans les menus ci-dessous puis clique Valider.")
         return
 
     # divorce
     if lc.startswith("divorce"):
         parts = re.findall(r'\d+', cmd)
-        if len(parts)==2:
-            id1, id2 = int(parts[0]), int(parts[1])
-            add_relation("divorce", id1, id2)
+        if len(parts) == 2:
+            add_relation("divorce", int(parts[0]), int(parts[1]))
             return
-        st.session_state._action_request = ("divorce_pick", None)
-        add_history("ℹ️ Choisis les deux IDs pour le divorce dans les menus ci-dessous puis clique 'Valider divorce'.")
+        st.session_state._action_request = ("divorce", None)
+        add_history("Choisis les deux IDs pour le divorce dans les menus ci-dessous puis clique Valider.")
         return
 
     # couple
     if lc.startswith("couple"):
         parts = re.findall(r'\d+', cmd)
-        if len(parts)==2:
+        if len(parts) == 2:
             add_relation("couple", int(parts[0]), int(parts[1]))
             return
-        st.session_state._action_request = ("couple_pick", None)
-        add_history("ℹ️ Choisis les deux IDs pour le couple puis clique 'Valider couple'.")
+        st.session_state._action_request = ("couple", None)
+        add_history("Choisis les deux IDs pour le couple dans les menus ci-dessous puis clique Valider.")
         return
 
-    # freresoeur and ancetre (IDs required)
-    for keyword in ("freresoeur","frère","frere"):
-        if lc.startswith(keyword):
-            parts = re.findall(r'\d+', cmd)
-            if len(parts)==2:
-                add_relation("freresoeur", int(parts[0]), int(parts[1]))
-            else:
-                add_history("⚠️ Usage: freresoeur <id1> <id2>")
-            return
+    # freresoeur
+    if lc.startswith("freresoeur") or lc.startswith("frere") or lc.startswith("frère"):
+        parts = re.findall(r'\d+', cmd)
+        if len(parts) == 2:
+            add_relation("freresoeur", int(parts[0]), int(parts[1]))
+        else:
+            add_history("Usage: freresoeur <id1> <id2>")
+        return
+
+    # ancetre
     if lc.startswith("ancetre"):
         parts = re.findall(r'\d+', cmd)
-        if len(parts)==2:
+        if len(parts) == 2:
             add_relation("ancetre", int(parts[0]), int(parts[1]))
-            return
-        add_history("⚠️ Usage: ancetre <idAncetre> <idDescendant>")
+        else:
+            add_history("Usage: ancetre <idAncetre> <idDescendant>")
         return
 
     # liste personnes
@@ -396,9 +427,9 @@ def handle_command(raw_cmd):
         if not st.session_state.persons:
             add_history("Aucune personne.")
             return
-        texte = "👥 Liste des personnes:"
+        texte = "Liste des personnes:"
         for pid, p in sorted(st.session_state.persons.items()):
-            texte += f"\n- ID {pid}: {p.get('prenom','')} {p.get('nom','')} (sex={p.get('sex','')}) birth={p.get('birth','')}"
+            texte += f"\n- ID {pid}: {p.get('prenom','')} {p.get('nom','')} sex={p.get('sex','')} birth={p.get('birth','')}"
         add_history(texte)
         return
 
@@ -407,7 +438,7 @@ def handle_command(raw_cmd):
         if not st.session_state.families:
             add_history("Aucune famille.")
             return
-        texte = "🏠 Liste des familles:"
+        texte = "Liste des familles:"
         for fid, fam in sorted(st.session_state.families.items()):
             texte += f"\n- FID {fid}: parents ({fam['parents'][0]},{fam['parents'][1]}) children: {', '.join(map(str,fam['children']))}"
         add_history(texte)
@@ -417,7 +448,7 @@ def handle_command(raw_cmd):
     if lc in ("exporter","export"):
         ged = build_gedcom_string()
         st.session_state._last_gedcom = ged
-        add_history("📤 GEDCOM prêt (clique sur Télécharger GEDCOM).")
+        add_history("GEDCOM prêt. Utilise le bouton Télécharger GEDCOM.")
         return
 
     # recommencer
@@ -427,41 +458,26 @@ def handle_command(raw_cmd):
         st.session_state.relations = []
         st.session_state.next_person_id = 1
         st.session_state.next_family_id = 1
-        add_history("♻️ Données réinitialisées.")
+        add_history("Données réinitialisées.")
         return
 
-    # help
+    # aide
     if lc in ("aide","help","?"):
-        add_history(
-            "Commandes:\n"
-            "- ajouter personne <Prenom> <Nom> [Sex] [birth]\n"
-            "- modifier <id> champ=val ...\n"
-            "- <id1> + <id2> = <idChild>  (IDs requis)\n"
-            "- mariage (ou 'mariage 2 5')\n"
-            "- divorce (ou 'divorce 2 5')\n"
-            "- couple <id1> <id2>\n"
-            "- freresoeur <id1> <id2>\n"
-            "- ancetre <id1> <id2>\n"
-            "- liste personnes (p)\n"
-            "- liste familles (f)\n"
-            "- exporter\n"
-            "- importer (via Upload)\n"
-            "- recommencer\n"
-        )
+        add_history("Commandes: ajouter personne <Prenom> <Nom> [Sex] [Birth] ; modifier <id> champ=val ... ; <id1> + <id2> = <idChild> ; mariage ; divorce ; couple ; freresoeur ; ancetre ; liste personnes ; liste familles ; exporter ; importer ; recommencer")
         return
 
-    add_history(f"❓ Commande inconnue: {cmd}")
+    add_history(f"Commande inconnue: {cmd}")
 
 # -------------------------
-# UI (interface inchangée + nouvelles fonctionnalités)
+# UI
 # -------------------------
 st.set_page_config(page_title="Arbre Généalogique", layout="wide")
-st.title("🌳 Arbre Généalogique — Interface")
+st.title("Arbre Généalogique")
 
 left, right = st.columns([1.2, 2])
 
 with left:
-    st.subheader("💬 Entrée de commande (IDs requis pour relations)")
+    st.subheader("Entrée de commande")
     cmd_in = st.text_input("Commande", value=st.session_state.cmd_input, key="cmd_input")
     if st.button("Exécuter"):
         handle_command(cmd_in)
@@ -469,39 +485,32 @@ with left:
 
     st.markdown("---")
 
-    # If action request (ID pickers) present, show pickers
-    action_req = st.session_state.get("_action_request", None)
+    # Action pickers (mariage/divorce/couple)
+    action_req = st.session_state.get("_action_request")
     if action_req:
         action_type, _ = action_req
-        st.info("Sélectionne les IDs ci-dessous puis clique sur Valider pour exécuter l'action demandée.")
-        # prepare id options
-        options = [(f"ID {pid} - {p['prenom']} {p['nom']}", pid) for pid,p in st.session_state.persons.items()]
-        if not options:
-            st.warning("Aucune personne dans la base pour sélectionner.")
+        st.info("Sélectionne les deux IDs puis clique Valider.")
+        ids = sorted(list(st.session_state.persons.keys()))
+        if not ids:
+            st.warning("Aucune personne dans la base.")
         else:
-            col_a, col_b = st.columns(2)
-            with col_a:
-                sel1 = st.selectbox("Parent / Personne 1", options=options, format_func=lambda x: x[0], key=f"pick1_{action_type}")
-            with col_b:
-                sel2 = st.selectbox("Parent / Personne 2", options=options, format_func=lambda x: x[0], key=f"pick2_{action_type}")
-            if st.button(f"Valider {action_type}"):
-                pid1 = sel1[1]
-                pid2 = sel2[1]
-                if action_type == "mariage_pick":
-                    add_relation("mariage", pid1, pid2)
-                elif action_type == "divorce_pick":
-                    add_relation("divorce", pid1, pid2)
-                elif action_type == "couple_pick":
-                    add_relation("couple", pid1, pid2)
+            sel1 = st.selectbox("Personne 1", options=ids, format_func=lambda pid: f"ID {pid} - {st.session_state.persons[pid]['prenom']} {st.session_state.persons[pid]['nom']}", key=f"pick1_{action_type}")
+            sel2 = st.selectbox("Personne 2", options=ids, format_func=lambda pid: f"ID {pid} - {st.session_state.persons[pid]['prenom']} {st.session_state.persons[pid]['nom']}", key=f"pick2_{action_type}")
+            if st.button("Valider"):
+                if action_type == "mariage":
+                    add_relation("mariage", sel1, sel2)
+                elif action_type == "divorce":
+                    add_relation("divorce", sel1, sel2)
+                elif action_type == "couple":
+                    add_relation("couple", sel1, sel2)
                 else:
-                    add_history(f"⚠️ Action inconnue: {action_type}")
+                    add_history(f"Action inconnue: {action_type}")
                 st.session_state._action_request = None
                 st.experimental_rerun()
 
     st.markdown("---")
-    # Search bar (dynamic)
-    st.subheader("🔎 Rechercher une personne")
-    search = st.text_input("Recherche (prenom, nom, ou 'prenom nom')", key="search_input")
+    st.subheader("Rechercher une personne")
+    search = st.text_input("Recherche (prenom, nom ou 'prenom nom')", key="search_input")
     if search:
         txt = search.strip().lower()
         matches = []
@@ -512,61 +521,57 @@ with left:
         if not matches:
             st.write("Aucun résultat.")
         else:
-            st.write(f"{len(matches)} résultat(s) — clique sur 'Détails' ou 'Copier ID' pour utiliser l'ID")
+            st.write(f"{len(matches)} résultat(s).")
             for pid,p in matches:
-                cols = st.columns([2,1,1])
-                cols[0].markdown(f"**ID {pid}** — {p.get('prenom','')} {p.get('nom','')} ({p.get('sex','')})")
+                cols = st.columns([3,1,1])
+                cols[0].markdown(f"**ID {pid} — {p.get('prenom','')} {p.get('nom','')}**")
                 if cols[1].button("Détails", key=f"detail_{pid}"):
                     st.session_state._show_detail = pid
                 if cols[2].button("Copier ID", key=f"copy_{pid}"):
                     st.session_state.cmd_input = str(pid)
-                    add_history(f"✂️ ID {pid} copié dans la zone commande.")
+                    add_history(f"ID {pid} copié dans la zone commande.")
 
     st.markdown("---")
-    # Add person quick form
-    st.subheader("➕ Ajouter une personne (formulaire)")
-    with st.form("form_add"):
+    st.subheader("Ajouter une personne")
+    with st.form("add_form"):
         p_prenom = st.text_input("Prénom")
         p_nom = st.text_input("Nom")
         p_sex = st.selectbox("Genre", ["", "H", "F", "Autre"])
         p_birth = st.text_input("Date de naissance (YYYY-MM-DD)")
         p_death = st.text_input("Date de décès (YYYY-MM-DD)")
-        p_place = st.text_input("Lieu (optionnel)")
-        p_note = st.text_area("Note (optionnel)", height=50)
-        submitted = st.form_submit_button("Ajouter")
-        if submitted:
+        p_place = st.text_input("Lieu")
+        p_note = st.text_area("Note", height=50)
+        if st.form_submit_button("Ajouter"):
             if not p_prenom or not p_nom:
-                add_history("⚠️ Prénom et nom requis pour ajouter une personne.")
+                add_history("Prénom et nom requis.")
             else:
                 create_person(p_prenom, p_nom, p_sex, p_birth, p_death, p_place, p_note)
 
     st.markdown("---")
-    # Import GEDCOM
-    st.subheader("📂 Importer GEDCOM")
+    st.subheader("Importer GEDCOM")
     uploaded = st.file_uploader("Choisir un fichier .ged", type=["ged","gedcom","txt"])
     if uploaded is not None:
         try:
             contents = uploaded.read()
             import_gedcom_bytes(contents)
         except Exception as e:
-            add_history(f"❌ Erreur import: {e}")
+            add_history(f"Erreur import: {e}")
 
     st.markdown("---")
-    # Export GEDCOM
-    st.subheader("📤 Exporter GEDCOM")
+    st.subheader("Exporter GEDCOM")
     ged = build_gedcom_string()
     st.download_button("Télécharger GEDCOM (.ged)", ged, file_name="arbre.ged", mime="text/plain")
 
     st.markdown("---")
-    st.subheader("📚 Rappel commandes (IDs requis pour relations)")
+    st.subheader("Rappel commandes")
     st.text(
         "aide\n"
         "ajouter personne <Prenom> <Nom> [Sex] [Birth]\n"
         "modifier <id> champ=val ...\n"
-        "<id1> + <id2> = <idChild>  (IDs requis)\n"
-        "mariage (ou 'mariage 2 5' ou 'mariage:' puis choisir IDs)\n"
-        "divorce (similaire)\n"
-        "couple <id1> <id2>\n"
+        "<id1> + <id2> = <idChild>\n"
+        "mariage (ou 'mariage 2 5')\n"
+        "divorce\n"
+        "couple\n"
         "freresoeur <id1> <id2>\n"
         "ancetre <id1> <id2>\n"
         "liste personnes (p)\n"
@@ -577,16 +582,14 @@ with left:
     )
 
 with right:
-    st.subheader("🕓 Historique (récent en haut)")
+    st.subheader("Historique")
     if st.session_state.history:
         for entry in st.session_state.history:
             st.markdown(f"`{entry}`")
     else:
         st.write("Aucune action pour l'instant.")
-
     st.markdown("---")
-    # Person list with Edit/Delete + show relations
-    st.subheader("👥 Toutes les personnes (avec actions)")
+    st.subheader("Toutes les personnes")
     if not st.session_state.persons:
         st.write("Aucune personne.")
     else:
@@ -594,48 +597,57 @@ with right:
             with st.expander(f"ID {pid} — {p.get('prenom','')} {p.get('nom','')}"):
                 cols = st.columns([3,1,1,1])
                 cols[0].write(f"**{p.get('prenom','')} {p.get('nom','')}**\n\nSexe: {p.get('sex','')}\n\nNaissance: {p.get('birth','')}\n\nDécès: {p.get('death','')}\n\nLieu: {p.get('place','')}\n\nNote: {p.get('note','')}")
-                if cols[1].button("✏️ Modifier", key=f"edit_{pid}"):
-                    # show inline edit form in modal area (simple approach: show below)
+                if cols[1].button("Modifier", key=f"edit_{pid}"):
                     st.session_state._editing = pid
-                if cols[2].button("🗑️ Supprimer", key=f"del_{pid}"):
-                    # confirmation
-                    if st.confirm(f"Confirmer suppression de ID {pid} — {p.get('prenom','')} {p.get('nom','')} ?"):
-                        delete_person(pid)
-                        st.experimental_rerun()
+                if cols[2].button("Supprimer", key=f"del_{pid}"):
+                    st.session_state._to_delete = pid
                 if cols[3].button("Voir relations", key=f"rel_{pid}"):
                     st.session_state._show_detail = pid
 
-    # Edit form if requested
+    # deletion confirmation
+    if st.session_state.get("_to_delete"):
+        pid = st.session_state._to_delete
+        if pid in st.session_state.persons:
+            p = st.session_state.persons[pid]
+            st.warning(f"Confirmer suppression de ID {pid} — {p.get('prenom','')} {p.get('nom','')}")
+            colc = st.columns([1,1])
+            if colc[0].button("Confirmer suppression", key=f"confirm_del_{pid}"):
+                delete_person(pid)
+                st.session_state._to_delete = None
+                st.experimental_rerun()
+            if colc[1].button("Annuler", key=f"cancel_del_{pid}"):
+                st.session_state._to_delete = None
+
+    # edit form
     if st.session_state.get("_editing"):
         epid = st.session_state._editing
         if epid in st.session_state.persons:
             st.markdown("---")
-            st.subheader(f"✏️ Modifier personne ID {epid}")
+            st.subheader(f"Modifier personne ID {epid}")
             p = st.session_state.persons[epid]
             with st.form(f"edit_form_{epid}"):
                 new_prenom = st.text_input("Prénom", value=p.get("prenom",""))
                 new_nom = st.text_input("Nom", value=p.get("nom",""))
-                new_sex = st.selectbox("Genre", ["", "H", "F", "Autre"], index=( ["","H","F","Autre"].index(p.get("sex","")) if p.get("sex","") in ["","H","F","Autre"] else 0))
+                new_sex = st.selectbox("Genre", ["", "H", "F", "Autre"], index=(["","H","F","Autre"].index(p.get("sex","")) if p.get("sex","") in ["","H","F","Autre"] else 0))
                 new_birth = st.text_input("Naissance", value=p.get("birth",""))
                 new_death = st.text_input("Décès", value=p.get("death",""))
                 new_place = st.text_input("Lieu", value=p.get("place",""))
                 new_note = st.text_area("Note", value=p.get("note",""))
-                save = st.form_submit_button("Enregistrer modifications")
-                if save:
+                if st.form_submit_button("Enregistrer"):
                     p["prenom"]=new_prenom; p["nom"]=new_nom; p["sex"]=new_sex
                     p["birth"]=new_birth; p["death"]=new_death; p["place"]=new_place; p["note"]=new_note
-                    add_history(f"✏️ Personne {epid} modifiée")
+                    add_history(f"Personne {epid} modifiée")
                     st.session_state._editing = None
                     st.experimental_rerun()
         else:
             st.session_state._editing = None
 
-    # Detail view if requested
+    # detail view
     if st.session_state.get("_show_detail"):
         show_id = st.session_state._show_detail
         if show_id in st.session_state.persons:
             st.markdown("---")
-            st.subheader(f"🔎 Détails — ID {show_id}")
+            st.subheader(f"Détails ID {show_id}")
             p = st.session_state.persons[show_id]
             st.write(f"**{p.get('prenom','')} {p.get('nom','')}**")
             st.write(f"Genre: {p.get('sex','')}")
@@ -643,27 +655,22 @@ with right:
             st.write(f"Décès: {p.get('death','')}")
             st.write(f"Lieu: {p.get('place','')}")
             st.write(f"Note: {p.get('note','')}")
-            # show relations involving person
-            st.write("**Relations:**")
+            st.write("Relations:")
             found = False
             for r in st.session_state.relations:
                 if show_id in r.get("persons",[]):
                     found = True
-                    other = [x for x in r.get("persons",[]) if x!=show_id]
-                    st.write(f"- {r.get('type')} with {other}")
-            # families where is parent
+                    others = [x for x in r.get("persons",[]) if x!=show_id]
+                    st.write(f"- {r.get('type')} avec {others} {(' : ' + r.get('note')) if r.get('note') else ''}")
             for fid, fam in st.session_state.families.items():
                 if show_id in fam.get("parents",[]):
                     st.write(f"- Parent in family FID {fid} (children: {fam.get('children')})")
                 if show_id in fam.get("children",[]):
                     st.write(f"- Child in family FID {fid} (parents: {fam.get('parents')})")
             if not found:
-                st.write("- Aucune relation directe enregistrée.")
-            if st.button("Fermer détail"):
+                st.write("- Aucune relation directe.")
+            if st.button("Fermer détails"):
                 st.session_state._show_detail = None
                 st.experimental_rerun()
         else:
             st.session_state._show_detail = None
-
-
-
