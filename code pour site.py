@@ -1,210 +1,194 @@
 # Créé par Couderc Peyré, le 03/10/2025 en Python 3.7
-import os
-import time
-from datetime import datetime
-from graphviz import Digraph
+import streamlit as st
+import json
+from datetime import date
 
-# =========================
-# Fichiers de contrôle
-# =========================
-pause_file = "bot1_pause.txt"
-data_file = "genealogie.txt"
+# ✅ Sécurité : gérer le cas où Graphviz n'est pas installé
+try:
+    from graphviz import Digraph
+except ModuleNotFoundError:
+    st.warning("⚠️ Le module 'graphviz' n'est pas installé. L’arbre ne pourra pas être généré.")
+    Digraph = None
 
-if not os.path.exists(pause_file):
-    open(pause_file, "w").close()
+# =====================
+# Données et initialisation
+# =====================
+if "personnes" not in st.session_state:
+    st.session_state.personnes = {}
+if "relations" not in st.session_state:
+    st.session_state.relations = []
+if "historique" not in st.session_state:
+    st.session_state.historique = []
 
-# =========================
-# Fonctions principales
-# =========================
+# =====================
+# Fonctions utilitaires
+# =====================
+def ajouter_historique(texte):
+    st.session_state.historique.insert(0, texte)
+    st.session_state.historique = st.session_state.historique[:50]  # ✅ garder 50 dernières
 
-def verifier_pause():
-    """Retourne True si le bot doit être en pause"""
-    with open(pause_file, "r") as f:
-        contenu = f.read().strip()
-    return contenu.lower() == "pause"
+def sauvegarder_donnees():
+    with open("genealogie_data.json", "w", encoding="utf-8") as f:
+        json.dump({
+            "personnes": st.session_state.personnes,
+            "relations": st.session_state.relations,
+            "historique": st.session_state.historique
+        }, f, indent=4, ensure_ascii=False)
+    ajouter_historique("💾 Données sauvegardées.")
 
-def lire_personnes():
-    """Lit les personnes depuis le fichier"""
-    personnes = {}
-    if os.path.exists(data_file):
-        with open(data_file, "r") as f:
-            for ligne in f:
-                ligne = ligne.strip()
-                if ligne:
-                    id, nom, date, pere, mere, enfants = ligne.split("|")
-                    personnes[id] = {
-                        "nom": nom,
-                        "date": date,
-                        "pere": pere if pere != "None" else None,
-                        "mere": mere if mere != "None" else None,
-                        "enfants": enfants.split(",") if enfants != "None" else []
-                    }
-    return personnes
-
-def ecrire_personnes(personnes):
-    """Écrit les personnes dans le fichier"""
-    with open(data_file, "w") as f:
-        for id, infos in personnes.items():
-            enfants_str = ",".join(infos["enfants"]) if infos["enfants"] else "None"
-            f.write(f"{id}|{infos['nom']}|{infos['date']}|{infos['pere'] or 'None'}|{infos['mere'] or 'None'}|{enfants_str}\n")
-
-def afficher_personnes(personnes):
-    """Affiche toutes les personnes"""
-    print("\n--- LISTE DES PERSONNES ---")
-    for id, infos in personnes.items():
-        print(f"{id} - {infos['nom']} ({infos['date']})")
-    print("----------------------------")
-
-def ajouter_personne(personnes):
-    """Ajoute une nouvelle personne"""
-    id = str(len(personnes) + 1)
-    nom = input("Nom : ")
-    date = input("Date de naissance (AAAA-MM-JJ) : ")
-
-    # Empêcher les dates avant 2010
+def charger_donnees():
     try:
-        annee = int(date.split("-")[0])
-        if annee < 2010:
-            print("⚠️ Les dates avant 2010 ne sont pas autorisées.")
-            return
-    except:
-        print("⚠️ Format de date invalide.")
-        return
+        with open("genealogie_data.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+            st.session_state.personnes = data.get("personnes", {})
+            st.session_state.relations = data.get("relations", [])
+            st.session_state.historique = data.get("historique", [])
+        ajouter_historique("📂 Données importées.")
+    except FileNotFoundError:
+        ajouter_historique("⚠️ Aucun fichier trouvé à importer.")
 
-    afficher_personnes(personnes)
-    pere = input("ID du père (laisser vide si inconnu) : ") or None
-    mere = input("ID de la mère (laisser vide si inconnue) : ") or None
-
-    personnes[id] = {
+def ajouter_personne(nom, prenom, genre, naissance, deces):
+    id_p = str(len(st.session_state.personnes) + 1)
+    st.session_state.personnes[id_p] = {
         "nom": nom,
-        "date": date,
-        "pere": pere,
-        "mere": mere,
-        "enfants": []
+        "prenom": prenom,
+        "genre": genre,
+        "naissance": naissance,
+        "deces": deces,
+        "parents": [],
+        "enfants": [],
+        "relations": []
     }
+    ajouter_historique(f"👤 Ajout de {prenom} {nom} (ID: {id_p})")
 
-    # Ajouter l’enfant dans la liste des parents
-    if pere and pere in personnes:
-        personnes[pere]["enfants"].append(id)
-    if mere and mere in personnes:
-        personnes[mere]["enfants"].append(id)
+def ajouter_relation(id1, id2, relation_type):
+    if id1 in st.session_state.personnes and id2 in st.session_state.personnes:
+        st.session_state.relations.append((id1, id2, relation_type))
+        st.session_state.personnes[id1]["relations"].append((id2, relation_type))
+        st.session_state.personnes[id2]["relations"].append((id1, relation_type))
 
-    ecrire_personnes(personnes)
-    print(f"✅ {nom} ajouté avec succès !")
+        # ✅ gestion enfants/parents automatique
+        if relation_type == "enfant":
+            st.session_state.personnes[id1]["enfants"].append(id2)
+            st.session_state.personnes[id2]["parents"].append(id1)
 
-def modifier_personne(personnes):
-    """Modifie une personne existante"""
-    afficher_personnes(personnes)
-    id = input("ID de la personne à modifier : ")
-
-    if id not in personnes:
-        print("❌ ID introuvable.")
-        return
-
-    infos = personnes[id]
-    print(f"Modification de {infos['nom']}")
-
-    nouveau_nom = input(f"Nom ({infos['nom']}) : ") or infos['nom']
-    nouvelle_date = input(f"Date ({infos['date']}) : ") or infos['date']
-
-    try:
-        annee = int(nouvelle_date.split("-")[0])
-        if annee < 2010:
-            print("⚠️ Les dates avant 2010 ne sont pas autorisées.")
-            return
-    except:
-        print("⚠️ Format de date invalide.")
-        return
-
-    nouveau_pere = input(f"Père (ID actuel: {infos['pere']}) : ") or infos['pere']
-    nouvelle_mere = input(f"Mère (ID actuel: {infos['mere']}) : ") or infos['mere']
-
-    # Mise à jour
-    personnes[id] = {
-        "nom": nouveau_nom,
-        "date": nouvelle_date,
-        "pere": nouveau_pere,
-        "mere": nouvelle_mere,
-        "enfants": infos["enfants"]
-    }
-
-    ecrire_personnes(personnes)
-    print("✅ Personne modifiée avec succès !")
-
-def statistiques(personnes):
-    """Affiche quelques statistiques générales"""
-    total = len(personnes)
-    if total == 0:
-        print("Aucune donnée disponible.")
-        return
-
-    # Âges
-    ages = []
-    for infos in personnes.values():
-        try:
-            naissance = datetime.strptime(infos["date"], "%Y-%m-%d")
-            age = (datetime.now() - naissance).days // 365
-            ages.append(age)
-        except:
-            pass
-
-    moyenne_age = sum(ages) / len(ages) if ages else 0
-
-    print("\n📊 STATISTIQUES 📊")
-    print(f"Nombre total de personnes : {total}")
-    print(f"Âge moyen : {moyenne_age:.1f} ans")
-    print(f"Nombre moyen d’enfants : {sum(len(p['enfants']) for p in personnes.values()) / total:.1f}")
-    print("------------------------")
-
-def generer_graphique(personnes):
-    """Génère l’arbre généalogique"""
-    dot = Digraph(comment="Arbre Généalogique")
-    for id, infos in personnes.items():
-        dot.node(id, f"{infos['nom']}\n({infos['date']})")
-        if infos["pere"] and infos["pere"] in personnes:
-            dot.edge(infos["pere"], id, label="père")
-        if infos["mere"] and infos["mere"] in personnes:
-            dot.edge(infos["mere"], id, label="mère")
-        for enfant in infos["enfants"]:
-            if enfant in personnes:
-                dot.edge(id, enfant, label="enfant")
-
-    dot.render("arbre_genealogique", format="png", cleanup=True)
-    print("🌳 Arbre généré : arbre_genealogique.png")
-
-# =========================
-# Boucle principale
-# =========================
-
-while True:
-    if verifier_pause():
-        print("⏸ Le bot est en pause. Reprise dans 5 secondes...")
-        time.sleep(5)
-        continue
-
-    personnes = lire_personnes()
-    print("\n--- MENU ---")
-    print("1. Ajouter une personne")
-    print("2. Modifier une personne")
-    print("3. Afficher toutes les personnes")
-    print("4. Statistiques")
-    print("5. Générer l’arbre")
-    print("6. Quitter")
-
-    choix = input("Choix : ")
-
-    if choix == "1":
-        ajouter_personne(personnes)
-    elif choix == "2":
-        modifier_personne(personnes)
-    elif choix == "3":
-        afficher_personnes(personnes)
-    elif choix == "4":
-        statistiques(personnes)
-    elif choix == "5":
-        generer_graphique(personnes)
-    elif choix == "6":
-        print("👋 Fin du programme.")
-        break
+        ajouter_historique(f"🔗 Relation {relation_type} entre {id1} et {id2}")
     else:
-        print("❌ Choix invalide.")
+        ajouter_historique("⚠️ ID invalide pour la relation.")
+
+def supprimer_personne(id_p):
+    if id_p in st.session_state.personnes:
+        nom = st.session_state.personnes[id_p]["nom"]
+        prenom = st.session_state.personnes[id_p]["prenom"]
+        del st.session_state.personnes[id_p]
+        st.session_state.relations = [r for r in st.session_state.relations if id_p not in r]
+        ajouter_historique(f"🗑️ Suppression de {prenom} {nom} (ID: {id_p})")
+    else:
+        ajouter_historique("⚠️ ID introuvable pour suppression.")
+
+def modifier_personne(id_p, nom, prenom, genre, naissance, deces):
+    if id_p in st.session_state.personnes:
+        p = st.session_state.personnes[id_p]
+        p["nom"], p["prenom"], p["genre"], p["naissance"], p["deces"] = nom, prenom, genre, naissance, deces
+        ajouter_historique(f"✏️ Modification de {prenom} {nom}")
+    else:
+        ajouter_historique("⚠️ ID introuvable pour modification.")
+
+def generer_graphique():
+    if Digraph is None:
+        st.error("⚠️ Graphviz non installé : impossible de générer le graphique.")
+        return
+
+    dot = Digraph(comment="Arbre Généalogique")
+    for id_p, infos in st.session_state.personnes.items():
+        label = f"{infos['prenom']} {infos['nom']}\n({infos['naissance']} - {infos['deces'] or '…'})"
+        dot.node(id_p, label)
+        for enfant in infos["enfants"]:
+            dot.edge(id_p, enfant, label="enfant")
+        for parent in infos["parents"]:
+            dot.edge(parent, id_p, label="parent")
+    dot.render("arbre_genealogique", format="png", cleanup=True)
+    st.success("🌳 Arbre généré avec succès (fichier: arbre_genealogique.png)")
+
+# =====================
+# Interface utilisateur
+# =====================
+st.title("🌿 Arbre Généalogique")
+
+col1, col2 = st.columns([1, 2])
+
+with col1:
+    st.header("🧭 Commandes")
+
+    choix = st.selectbox("Choisir une action :", [
+        "Ajouter une personne",
+        "Modifier une personne",
+        "Supprimer une personne",
+        "Ajouter une relation",
+        "Importer",
+        "Exporter",
+        "Générer graphique"
+    ])
+
+    if choix == "Ajouter une personne":
+        nom = st.text_input("Nom")
+        prenom = st.text_input("Prénom")
+        genre = st.selectbox("Genre", ["Homme", "Femme", "Autre"])
+        naissance = st.number_input("Année de naissance", 1000, 2050, 2000)
+        deces = st.text_input("Année de décès (facultatif)")
+        if st.button("Ajouter"):
+            ajouter_personne(nom, prenom, genre, naissance, deces or None)
+            sauvegarder_donnees()
+
+    elif choix == "Modifier une personne":
+        id_p = st.text_input("ID de la personne à modifier")
+        if id_p in st.session_state.personnes:
+            p = st.session_state.personnes[id_p]
+            nom = st.text_input("Nom", p["nom"])
+            prenom = st.text_input("Prénom", p["prenom"])
+            genre = st.selectbox("Genre", ["Homme", "Femme", "Autre"], index=["Homme", "Femme", "Autre"].index(p["genre"]))
+            naissance = st.number_input("Année de naissance", 1000, 2050, int(p["naissance"]))
+            deces = st.text_input("Année de décès (facultatif)", p["deces"] or "")
+            if st.button("Modifier"):
+                modifier_personne(id_p, nom, prenom, genre, naissance, deces or None)
+                sauvegarder_donnees()
+        else:
+            st.info("Entrez un ID valide.")
+
+    elif choix == "Supprimer une personne":
+        id_p = st.text_input("ID à supprimer")
+        if st.button("Supprimer"):
+            supprimer_personne(id_p)
+            sauvegarder_donnees()
+
+    elif choix == "Ajouter une relation":
+        id1 = st.text_input("ID 1")
+        id2 = st.text_input("ID 2")
+        type_relation = st.selectbox("Type de relation", ["couple", "mariage", "divorce", "frere/soeur", "parent", "enfant"])
+        if st.button("Ajouter la relation"):
+            ajouter_relation(id1, id2, type_relation)
+            sauvegarder_donnees()
+
+    elif choix == "Importer":
+        charger_donnees()
+
+    elif choix == "Exporter":
+        sauvegarder_donnees()
+
+    elif choix == "Générer graphique":
+        generer_graphique()
+
+with col2:
+    st.header("👥 Liste des personnes")
+    recherche = st.text_input("🔍 Rechercher une personne")
+    for id_p, infos in st.session_state.personnes.items():
+        if recherche.lower() in infos["prenom"].lower() or recherche.lower() in infos["nom"].lower():
+            st.write(f"**{infos['prenom']} {infos['nom']}** (ID: {id_p}) — {infos['genre']} — Né(e): {infos['naissance']} Décès: {infos['deces'] or '—'}")
+            if st.button(f"🗑️ Supprimer {id_p}"):
+                supprimer_personne(id_p)
+                sauvegarder_donnees()
+                st.experimental_rerun()
+
+st.sidebar.header("📜 Historique (50 derniers)")
+for ligne in st.session_state.historique:
+    st.sidebar.write(ligne)
