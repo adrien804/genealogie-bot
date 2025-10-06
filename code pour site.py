@@ -1,7 +1,6 @@
 # Créé par Couderc Peyré, le 03/10/2025 en Python 3.7
 import streamlit as st
 import json
-import datetime
 
 # =========================
 # 🔧 Initialisation
@@ -22,7 +21,7 @@ def ajouter_historique(cmd):
     st.session_state.historique.insert(0, cmd)
     st.session_state.historique = st.session_state.historique[:50]
 
-def ajouter_personne(nom, prenom, genre, naissance=None, deces=None):
+def ajouter_personne(nom, prenom, genre, naissance="", deces=""):
     pid = len(st.session_state.personnes) + 1
     st.session_state.personnes.append({
         "id": pid,
@@ -81,10 +80,10 @@ if menu == "Personnes":
         nom = st.text_input("Nom")
         prenom = st.text_input("Prénom")
         genre = st.selectbox("Genre", ["Homme", "Femme", "Autre"])
-        naissance = st.date_input("Date de naissance", value=None)
-        deces = st.date_input("Date de décès", value=None)
+        naissance = st.text_input("Date de naissance (ex : 12/03/1980 ou 1980)")
+        deces = st.text_input("Date de décès (laisser vide si vivant)")
         if st.button("Ajouter"):
-            ajouter_personne(nom, prenom, genre, naissance.strftime("%Y-%m-%d"), deces.strftime("%Y-%m-%d") if deces else None)
+            ajouter_personne(nom, prenom, genre, naissance, deces)
             st.success(f"{prenom} {nom} ajouté.")
 
     st.write("### Liste des personnes")
@@ -101,7 +100,7 @@ if menu == "Personnes":
             with col4:
                 if st.button("🗑️", key=f"del_{p['id']}"):
                     supprimer_personne(p["id"])
-                    st.experimental_rerun()
+                    st.rerun()
 
 # =========================
 # 💞 Section Relations
@@ -146,4 +145,3 @@ elif menu == "Import / Export":
     if uploaded:
         import_data(uploaded)
         st.success("Fichier importé avec succès.")
-
